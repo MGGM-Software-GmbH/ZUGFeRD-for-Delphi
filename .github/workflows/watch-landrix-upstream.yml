@@ -107,17 +107,17 @@ jobs:
             fi
 
             issue_body="$(cat <<EOF
-@PeterSawatzki-MGGM
+          @PeterSawatzki-MGGM
 
-${notice}
+          ${notice}
 
-- Landrix main: [\`${UPSTREAM_SHA}\`](https://github.com/LandrixSoftware/ZUGFeRD-for-Delphi/commit/${UPSTREAM_SHA})
-- MGGM main: [\`${FORK_SHA}\`](https://github.com/${REPOSITORY}/commit/${FORK_SHA})
-- [Commits auf Landrix main](https://github.com/LandrixSoftware/ZUGFeRD-for-Delphi/commits/main)
+          - Landrix main: [\`${UPSTREAM_SHA}\`](https://github.com/LandrixSoftware/ZUGFeRD-for-Delphi/commit/${UPSTREAM_SHA})
+          - MGGM main: [\`${FORK_SHA}\`](https://github.com/${REPOSITORY}/commit/${FORK_SHA})
+          - [Commits auf Landrix main](https://github.com/LandrixSoftware/ZUGFeRD-for-Delphi/commits/main)
 
-Das Issue wird nach der Synchronisierung automatisch geschlossen.
-EOF
-)"
+          Das Issue wird nach der Synchronisierung automatisch geschlossen.
+          EOF
+          )"
 
             if [[ -z "$issue_number" ]]; then
               gh issue create \
