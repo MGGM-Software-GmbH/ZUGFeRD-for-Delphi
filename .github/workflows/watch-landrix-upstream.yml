@@ -1,0 +1,146 @@
+name: Landrix upstream monitor
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+      timezone: 'Europe/Berlin'
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: 'Testbenachrichtigung auslösen'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: landrix-upstream-monitor
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    if: github.repository == 'MGGM-Software-GmbH/ZUGFeRD-for-Delphi'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare MGGM and Landrix main branches
+        id: compare
+        shell: bash
+        env:
+          FORK_REPOSITORY: ${{ github.repository }}
+          TEST_NOTIFICATION: ${{ inputs.test_notification || false }}
+        run: |
+          set -euo pipefail
+
+          repository_dir="$(mktemp -d)"
+          trap 'rm -rf "$repository_dir"' EXIT
+
+          git init --quiet "$repository_dir"
+          git -C "$repository_dir" remote add fork "https://github.com/${FORK_REPOSITORY}.git"
+          git -C "$repository_dir" remote add upstream "https://github.com/LandrixSoftware/ZUGFeRD-for-Delphi.git"
+          git -C "$repository_dir" fetch --quiet --no-tags fork refs/heads/main:refs/remotes/fork/main
+          git -C "$repository_dir" fetch --quiet --no-tags upstream refs/heads/main:refs/remotes/upstream/main
+
+          fork_sha="$(git -C "$repository_dir" rev-parse refs/remotes/fork/main)"
+          upstream_sha="$(git -C "$repository_dir" rev-parse refs/remotes/upstream/main)"
+          missing_count="$(git -C "$repository_dir" rev-list --count refs/remotes/fork/main..refs/remotes/upstream/main)"
+
+          if [[ "$TEST_NOTIFICATION" == 'true' ]]; then
+            upstream_pending='true'
+            simulated='true'
+          elif git -C "$repository_dir" merge-base --is-ancestor "$upstream_sha" "$fork_sha"; then
+            upstream_pending='false'
+            simulated='false'
+          else
+            upstream_pending='true'
+            simulated='false'
+          fi
+
+          {
+            echo "fork_sha=$fork_sha"
+            echo "upstream_sha=$upstream_sha"
+            echo "missing_count=$missing_count"
+            echo "upstream_pending=$upstream_pending"
+            echo "simulated=$simulated"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Maintain notification issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          FORK_SHA: ${{ steps.compare.outputs.fork_sha }}
+          UPSTREAM_SHA: ${{ steps.compare.outputs.upstream_sha }}
+          MISSING_COUNT: ${{ steps.compare.outputs.missing_count }}
+          UPSTREAM_PENDING: ${{ steps.compare.outputs.upstream_pending }}
+          SIMULATED: ${{ steps.compare.outputs.simulated }}
+        run: |
+          set -euo pipefail
+
+          label='upstream-update'
+          issue_title='Landrix enthält neue ZfD-Commits'
+
+          gh label create "$label" \
+            --repo "$REPOSITORY" \
+            --color 'B60205' \
+            --description 'Neue Commits im Landrix-Upstream' \
+            --force
+
+          issue_number="$(gh issue list \
+            --repo "$REPOSITORY" \
+            --state open \
+            --label "$label" \
+            --search "${issue_title} in:title" \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ "$UPSTREAM_PENDING" == 'true' ]]; then
+            if [[ "$SIMULATED" == 'true' ]]; then
+              notice='Dies ist eine Testbenachrichtigung. Landrix und MGGM können bereits synchron sein.'
+            else
+              notice="Im Landrix-Repository liegen ${MISSING_COUNT} Commits, die noch nicht in MGGM main enthalten sind."
+            fi
+
+            issue_body="$(cat <<EOF
+@PeterSawatzki-MGGM
+
+${notice}
+
+- Landrix main: [\`${UPSTREAM_SHA}\`](https://github.com/LandrixSoftware/ZUGFeRD-for-Delphi/commit/${UPSTREAM_SHA})
+- MGGM main: [\`${FORK_SHA}\`](https://github.com/${REPOSITORY}/commit/${FORK_SHA})
+- [Commits auf Landrix main](https://github.com/LandrixSoftware/ZUGFeRD-for-Delphi/commits/main)
+
+Das Issue wird nach der Synchronisierung automatisch geschlossen.
+EOF
+)"
+
+            if [[ -z "$issue_number" ]]; then
+              gh issue create \
+                --repo "$REPOSITORY" \
+                --title "$issue_title" \
+                --body "$issue_body" \
+                --label "$label" \
+                --assignee 'PeterSawatzki-MGGM'
+            else
+              current_body="$(gh issue view "$issue_number" --repo "$REPOSITORY" --json body --jq '.body')"
+              if [[ "$current_body" != *"$UPSTREAM_SHA"* ]] || [[ "$SIMULATED" == 'true' ]]; then
+                gh issue comment "$issue_number" \
+                  --repo "$REPOSITORY" \
+                  --body "Landrix main steht jetzt auf \`${UPSTREAM_SHA}\`."
+                gh issue edit "$issue_number" \
+                  --repo "$REPOSITORY" \
+                  --body "$issue_body" \
+                  --add-assignee 'PeterSawatzki-MGGM'
+              fi
+            fi
+          elif [[ -n "$issue_number" ]]; then
+            gh issue comment "$issue_number" \
+              --repo "$REPOSITORY" \
+              --body "MGGM main enthält Landrix main \`${UPSTREAM_SHA}\`."
+            gh issue close "$issue_number" --repo "$REPOSITORY" --reason completed
+          fi
